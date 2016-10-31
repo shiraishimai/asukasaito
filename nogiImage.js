@@ -22,8 +22,8 @@ function getUUID() {
     return uuid++;
 }
 class AsukaSaito {
-    constructor() {
-        this.dir = './mail/';
+    constructor(dir) {
+        this.dir = dir || './img/';
         this.retryLimit = 3;
         let database = fs.readJson(path.resolve(this.dir, STATUS_FILE), (error, database) => {
             if (!error) {
