@@ -1,0 +1,19 @@
+{
+  "name": "asukasaito",
+  "version": "1.0.0",
+  "description": "",
+  "main": "nogiImage.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "dependencies": {
+    "bluebird": "^3.4.6",
+    "fs-extra": "^0.30.0",
+    "gm": "^1.23.0",
+    "misa": "^1.0.0",
+    "mkdirp": "^0.5.1",
+    "request": "^2.75.0",
+    "streamifier": "^0.1.1"
+  }
+}
