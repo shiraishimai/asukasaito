@@ -6,7 +6,6 @@ let gm = require('gm'),
     Stream = require('stream'),
     Request = require('request'),
     promise = require('bluebird'),
-    // require mkdirp
     requestPromise = promise.promisify(Request);
 let fileIndex = new Map(),
     hashTable = new Set(),
@@ -157,8 +156,7 @@ class AsukaSaito {
         return new promise((resolve, reject) => {
             if (!Util.isDirectoryExist(path.dirname(outputTarget))) {
                 console.log('[renamePromise] Directory not exist!', outputTarget);
-                let mkdirp = require('mkdirp');
-                mkdirp.sync(path.dirname(outputTarget));
+                fs.mkdirsSync(path.dirname(outputTarget));
             }
             // Loop through all suffix or create suffix
             while (Util.isFileExist(outputTarget)) {
@@ -202,8 +200,7 @@ class AsukaSaito {
     createWriteStream(targetPath) {
         if (!Util.isDirectoryExist(path.dirname(targetPath))) {
             console.log('[createWriteStream] Directory not exist!', targetPath);
-            let mkdirp = require('mkdirp');
-            mkdirp.sync(path.dirname(targetPath));
+            fs.mkdirsSync(path.dirname(targetPath));
         }
         return fs.createWriteStream(targetPath);
     }
