@@ -2,14 +2,13 @@ let gm = require('gm'),
     path = require('path'),
     Util = require('misa'),
     fs = require('fs-extra'),
+    Nanami = require('nanami'),
     crypto = require('crypto'),
     Stream = require('stream'),
     Request = require('request'),
     promise = require('bluebird'),
     requestPromise = promise.promisify(Request);
-let fileIndex = new Map(),
-    hashTable = new Set(),
-    tempHash = new Set();
+let tempHash = new Set();
 let uuid = 0;
 const 
     CHECK_FILE_REGEX = /\(\d+\)(?=[^)]*$)/, // check whether it has ()
@@ -25,11 +24,21 @@ class AsukaSaito {
         this.dir = dir || './img/';
         this.retryLimit = 3;
         let database = fs.readJson(path.resolve(this.dir, STATUS_FILE), (error, database) => {
-            if (!error) {
-                hashTable = database && new Set(database.hashTable);
-                fileIndex = database && new Map(database.fileIndex);                
-            }
-            this.removeTemp();
+            if (error) return this.rebuildMap();
+            this.hashTable = database && new Set(database.hashTable);
+            this.fileIndex = database && new Map(database.fileIndex);
+        });
+        this.removeTemp();
+    }
+    rebuildMap() {
+        this.hashTable = new Set();
+        this.fileIndex = new Map();
+        if (!Util.isDirectoryExist(this.dir)) {
+            fs.mkdirsSync(this.dir);
+            return;
+        }
+        return Nanami.recursiveReadDirPromise(this.dir, file => {
+            return this.hashingPromise(fs.createReadStream(file)).then(hash => console.log(hash, file));
         });
     }
     removeTemp() {
@@ -41,18 +50,25 @@ class AsukaSaito {
     }
     saveState() {
         fs.writeFileSync(path.resolve(this.dir, STATUS_FILE), JSON.stringify({
-            hashTable: [...hashTable],
-            fileIndex: [...fileIndex]
+            hashTable: [...this.hashTable],
+            fileIndex: [...this.fileIndex]
         }));
+    }
+    removeFailedHash() {
+        for (let hash of tempHash) {
+            console.log(`Deleting hash: ${hash}`);
+            this.hashTable.delete(hash);
+        }
     }
     onFinish() {
         this.removeTemp();
+        this.removeFailedHash();
         this.saveState();
     }
     tokenRequestPromise(url) {
         return requestPromise(url).then(response => {
             if (response.statusCode !== 200) {
-                throw new NetworkError([response.statusCode, url].join(' '));
+                throw new NetworkError(`${response.statusCode} ${url}`);
             }
             let cookie = response.headers['set-cookie'];
             return cookie && cookie[0] || cookie;
@@ -61,24 +77,23 @@ class AsukaSaito {
             throw error;
         });
     }
-    hashingPromise(stream, encoding) {
-        encoding = encoding || 'base64';  // Can be 'hex'
+    hashingPromise(stream, encoding = 'base64') {
         return new promise((resolve, reject) => {
             let hashing = crypto.createHash('md5').setEncoding(encoding);
             stream.pipe(hashing);
             hashing.on('finish', () => {
                 // If BASE64, last 2 char will be '=='
                 let hash = encoding === 'base64' ? (hashing.read()).slice(0, -2) : hashing.read();
-                if (hashTable.has(hash)) {
-                    reject(new HashDuplicateError(['Hash already exist!', hash].join(' ')));
+                if (this.hashTable.has(hash)) {
+                    reject(new HashDuplicateError(`Hash already exist! ${hash}`));
                 } else {
                     // Add to hashTable
-                    hashTable.add(hash);    
+                    this.hashTable.add(hash);    
                     resolve(hash);
                 }
             });
             hashing.on('error', error => {
-                console.log("[hashingPromise error]", error);
+                console.log('[hashingPromise error]', error);
                 resolve(void 0);
             });
         });
@@ -136,16 +151,16 @@ class AsukaSaito {
     regexAddSuffix(source) {
         let dirDiff = path.relative(path.resolve(this.dir), source);
         // Check if fileIndex exist
-        if (fileIndex.has(dirDiff)) {
-            let index = fileIndex.get(dirDiff) + 1;
-            fileIndex.set(dirDiff, index);
-            return source.replace(NEW_FILE_REGEX, "("+index+")$&");
+        if (this.fileIndex.has(dirDiff)) {
+            let index = this.fileIndex.get(dirDiff) + 1;
+            this.fileIndex.set(dirDiff, index);
+            return source.replace(NEW_FILE_REGEX, `(${index})$&`);
         }
         // Check if source is fresh
         if (!CHECK_FILE_REGEX.test(source)) {
             // Add file to fileIndex
-            fileIndex.set(dirDiff, 0);
-            return source.replace(NEW_FILE_REGEX, "(0)$&");
+            this.fileIndex.set(dirDiff, 0);
+            return source.replace(NEW_FILE_REGEX, `(0)$&`);
         }
         // If source has quotational expression
         return source.replace(OLD_FILE_REGEX, (selection, match, index, fullText) => {
@@ -178,7 +193,7 @@ class AsukaSaito {
         return new promise((resolve, reject) => {
             let stream = Request(options).on('response', response => {
                 if (response.statusCode !== 200) {
-                    return reject(new NetworkError([response.statusCode, JSON.stringify(options)].join(' ')));
+                    return reject(new NetworkError(`${response.statusCode} ${JSON.stringify(options)}`));
                 }
                 let contentLength = response.headers['content-length'],
                     dataDisposition = response.headers['content-disposition'],
@@ -187,12 +202,12 @@ class AsukaSaito {
                 if (filenameFound && filenameFound.length > 2) {
                     filename = decodeURIComponent(filenameFound[1].replace(/['"]/g, ''));
                 } else {
-                    filename = path.basename(options.url || options);
+                    filename = path.basename(options.url || options).replace(/\?.*/, '');
                 }
                 resolve([stream, filename, contentLength]);
             })
             .on('error', error => {
-                console.log("[requestStreamPromise]", error);
+                console.log('[requestStreamPromise]', error);
                 reject(new NetworkError(error));
             }).pipe(Stream.PassThrough());
         });
@@ -206,6 +221,7 @@ class AsukaSaito {
     }
     /**
      * Return renamePromise Function
+     * for delay execution until all checkings are passed
      */
     coreMechanics(memberId, stream, filename) {
         return new promise((resolve, reject) => {
@@ -214,7 +230,8 @@ class AsukaSaito {
                 tempFile = path.resolve(this.dir, TEMP_FOLDER, String(getUUID()));
             promises.push(this.hashingPromise(stream).then(hash => {
                 // Register hash to temporary dictionary as a key to remove hash from hashTable
-                tempHash.add(hash);
+                // in case of something has failed in progress
+                hash && tempHash.add(hash);
                 return hash;
             }));
             promises.push(this.namingPromise(stream, filename));
@@ -227,8 +244,16 @@ class AsukaSaito {
             stream.on('end', () => {
                 resolutionPromise.spread((hash, name) => {
                     console.log('[coreMechanics] ReadStream completed', name);
-                    tempHash.delete(hash);
-                    return this.renamePromise.bind(this, tempFile, path.resolve(this.dir, memberId, name));
+                    // Return binded function
+                    return () => {
+                        let renameResolution = this.renamePromise(tempFile, path.resolve(this.dir, memberId, name));
+                        renameResolution.then(() => {
+                            // Hash has confirmed completion of execution
+                            hash && tempHash.delete(hash);
+                        });
+                        return renameResolution;
+                    };
+                    // return this.renamePromise.bind(this, tempFile, path.resolve(this.dir, memberId, name));
                 }).then(resolve)
                 .catch(error => {
                     console.log('[coreMechanics] caught:', error instanceof CustomError ? error.name : error);
@@ -245,16 +270,16 @@ class AsukaSaito {
         });
         return new promise((resolve, reject) => {
             stream.on('end', () => {
-                console.log('[checkStreamIntegrity]', lengthReceived, '/', contentLength);
+                console.log(`[checkStreamIntegrity] ${lengthReceived}/${contentLength}`);
                 if (lengthReceived >= contentLength) {
                     return resolve();
                 }
-                return reject(new IncompletionError(['Corrupted stream at', lengthReceived, '/', contentLength].join(' ')));
+                return reject(new IncompletionError(`Corrupted stream at ${lengthReceived}/${contentLength}`));
             });
         });
     }
     imageDisposalPromise(tokenUrl, memberId) {
-        if (!~tokenUrl.indexOf("dcimg.awalker")) return promise.reject(new InputError("[imageDisposalPromise] Do not recognize url:", tokenUrl));
+        if (!~tokenUrl.indexOf("dcimg.awalker")) return promise.reject(new InputError(`[imageDisposalPromise] Do not recognize url: ${tokenUrl}`));
         console.log('[imageDisposalPromise]');
         memberId = memberId || '';
         let imageUrl = tokenUrl.replace('img1', 'img2').replace('id=', 'sec_key='),
@@ -273,14 +298,15 @@ class AsukaSaito {
                     promises.push(this.coreMechanics(memberId, stream, filename)
                         .timeout(60*2*1000));
                     promises.push(this.checkStreamIntegrity(stream, contentLength));
-                    return promise.all(promises).then(([coreResult, whatever]) => coreResult);
+                    // checkStreamIntegrity will reject if fail, thus result is not important
+                    return promise.all(promises).then(([coreResult, streamIntegrity]) => coreResult);
                 })
                 .then(renamePromise => renamePromise())
                 .catch(
-                    {"name":"IncompletionError"}, 
+                    {'name':'IncompletionError'}, 
                     promise.TimeoutError, 
                     () => {
-                        console.log("[imageDisposalPromise attemptDownload] Retrying ", attempt, imageUrl);
+                        console.log('[imageDisposalPromise attemptDownload] Retrying ', attempt, imageUrl);
                         return attemptDownload(attempt+1);
                     }
                 );
