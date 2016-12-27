@@ -11,7 +11,8 @@
     "bluebird": "^3.4.6",
     "fs-extra": "^0.30.0",
     "gm": "^1.23.0",
-    "misa": "^1.0.0",
+    "misa": "*",
+    "nanami": "*",
     "request": "^2.75.0",
     "streamifier": "^0.1.1"
   }

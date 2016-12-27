@@ -11,7 +11,7 @@ let gm = require('gm'),
 let tempHash = new Set();
 let uuid = 0;
 const 
-    CHECK_FILE_REGEX = /\(\d+\)(?=[^)]*$)/, // check whether it has ()
+    GET_FILE_REGEX = /(.*)(\((\d+)\))([^)]*$)/, // get whole string & pick number inside ()
     OLD_FILE_REGEX = /(\d+)(?=\)\D*$)/, // get number inside ()
     NEW_FILE_REGEX = /\.[^.]+$/,    // get path without extension
     TEMP_FOLDER = './temp/',
@@ -31,14 +31,24 @@ class AsukaSaito {
         this.removeTemp();
     }
     rebuildMap() {
+        console.log('[rebuildMap]');
         this.hashTable = new Set();
         this.fileIndex = new Map();
         if (!Util.isDirectoryExist(this.dir)) {
             fs.mkdirsSync(this.dir);
-            return;
+            return Promise.reject();
         }
         return Nanami.recursiveReadDirPromise(this.dir, file => {
-            return this.hashingPromise(fs.createReadStream(file)).then(hash => console.log(hash, file));
+            return this.hashingPromise(fs.createReadStream(file)).then(hash => {
+                this.hashTable.add(hash);
+                let index = parseInt(file.replace(GET_FILE_REGEX, `$3`));
+                // if no quotational expression found, full text is returned
+                if (isNaN(index)) return;
+                let dirDiff = path.relative(path.resolve(this.dir), file.replace(GET_FILE_REGEX, `$1$4`));
+                if (!this.fileIndex.has(dirDiff) || this.fileIndex.get(dirDiff) < index) {
+                    this.fileIndex.set(dirDiff, index);
+                }
+            });
         });
     }
     removeTemp() {
@@ -156,16 +166,17 @@ class AsukaSaito {
             this.fileIndex.set(dirDiff, index);
             return source.replace(NEW_FILE_REGEX, `(${index})$&`);
         }
-        // Check if source is fresh
-        if (!CHECK_FILE_REGEX.test(source)) {
-            // Add file to fileIndex
-            this.fileIndex.set(dirDiff, 0);
-            return source.replace(NEW_FILE_REGEX, `(0)$&`);
-        }
         // If source has quotational expression
-        return source.replace(OLD_FILE_REGEX, (selection, match, index, fullText) => {
-            return parseInt(selection) + 1;
+        let proposedNewName = source.replace(OLD_FILE_REGEX, (selection, match, index, fullText) => {
+            let newIndex = parseInt(selection) + 1;
+            this.fileIndex.set(dirDiff, newIndex);
+            return newIndex;
         });
+        if (proposedNewName !== source) return proposedNewName;
+        // Source is fresh
+        // Add file to fileIndex
+        this.fileIndex.set(dirDiff, 0);
+        return source.replace(NEW_FILE_REGEX, `(0)$&`);
     }
     renamePromise(inputTarget, outputTarget) {
         return new promise((resolve, reject) => {
